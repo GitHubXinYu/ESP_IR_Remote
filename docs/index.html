@@ -197,14 +197,17 @@
     }
 
     async function getSha(path) {
-      const res = await fetch(`${apiUrl(path)}?ref=${branch}`, { headers: headers() });
+      const res = await fetch(`${apiUrl(path)}?ref=${branch}&t=${Date.now()}`, {
+        cache: 'no-store',
+        headers: headers()
+      });
       if (res.status === 404) return '';
       if (!res.ok) throw new Error(`读取 ${path} 失败: HTTP ${res.status}`);
       const data = await res.json();
       return data.sha || '';
     }
 
-    async function putJson(path, data, commitMessage) {
+    async function putJson(path, data, commitMessage, attempt = 1) {
       if (!token()) throw new Error('请先保存 GitHub token');
       const sha = await getSha(path);
       const body = {
@@ -215,9 +218,13 @@
       if (sha) body.sha = sha;
       const res = await fetch(apiUrl(path), {
         method: 'PUT',
+        cache: 'no-store',
         headers: headers(true),
         body: JSON.stringify(body)
       });
+      if (res.status === 409 && attempt < 2) {
+        return putJson(path, data, commitMessage, attempt + 1);
+      }
       if (!res.ok) {
         const text = await res.text();
         throw new Error(`写入 ${path} 失败: HTTP ${res.status} ${text.slice(0, 140)}`);
