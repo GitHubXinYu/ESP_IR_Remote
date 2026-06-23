@@ -1,0 +1,286 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>ESP IR Remote</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f5f6f8;
+      --panel: #fff;
+      --text: #111827;
+      --muted: #667085;
+      --border: #d7dce2;
+      --green: #087443;
+      --red: #b42318;
+      --blue: #175cd3;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    main {
+      width: min(620px, 100%);
+      margin: 0 auto;
+      padding: 24px 16px 36px;
+    }
+    h1 {
+      margin: 0 0 16px;
+      font-size: 25px;
+      font-weight: 700;
+      letter-spacing: 0;
+    }
+    section {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 16px;
+      margin-bottom: 14px;
+    }
+    label {
+      display: block;
+      margin: 0 0 6px;
+      color: var(--muted);
+      font-size: 13px;
+      font-weight: 600;
+    }
+    input {
+      width: 100%;
+      min-height: 42px;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 9px 10px;
+      color: var(--text);
+      font: inherit;
+    }
+    .row {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+      align-items: center;
+    }
+    button {
+      min-height: 44px;
+      border: 0;
+      border-radius: 8px;
+      padding: 0 18px;
+      color: white;
+      font: inherit;
+      font-weight: 700;
+      cursor: pointer;
+    }
+    button:disabled {
+      cursor: wait;
+      opacity: .65;
+    }
+    .on { background: var(--green); }
+    .off { background: var(--red); }
+    .secondary { background: var(--blue); }
+    .ghost {
+      background: transparent;
+      color: var(--blue);
+      border: 1px solid var(--border);
+    }
+    .status {
+      display: grid;
+      grid-template-columns: 130px 1fr;
+      gap: 8px 12px;
+      margin-top: 12px;
+      font-size: 15px;
+    }
+    .status dt {
+      color: var(--muted);
+      margin: 0;
+    }
+    .status dd {
+      margin: 0;
+      word-break: break-word;
+    }
+    .message {
+      min-height: 22px;
+      margin-top: 12px;
+      color: var(--muted);
+      font-size: 14px;
+      word-break: break-word;
+    }
+    pre {
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+      background: #eef1f5;
+      border-radius: 6px;
+      padding: 12px;
+      margin: 12px 0 0;
+      font-size: 13px;
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>AUX 空调外网遥控</h1>
+
+    <section>
+      <label for="token">GitHub fine-grained token</label>
+      <input id="token" type="password" autocomplete="off" placeholder="github_pat_...">
+      <div class="row" style="margin-top:10px">
+        <button class="secondary" id="saveToken">保存 Token</button>
+        <button class="ghost" id="clearToken">清除</button>
+      </div>
+      <div class="message" id="tokenState"></div>
+    </section>
+
+    <section>
+      <div class="row">
+        <button class="on" data-command="on">开机</button>
+        <button class="off" data-command="off">关机</button>
+        <button class="ghost" id="refresh">刷新状态</button>
+      </div>
+      <dl class="status">
+        <dt>最后命令</dt><dd id="lastCommand">-</dd>
+        <dt>已处理时间</dt><dd id="lastProcessed">-</dd>
+        <dt>在线状态</dt><dd id="online">-</dd>
+        <dt>Wi-Fi RSSI</dt><dd id="rssi">-</dd>
+        <dt>IP</dt><dd id="ip">-</dd>
+        <dt>错误</dt><dd id="lastError">-</dd>
+      </dl>
+      <div class="message" id="message"></div>
+      <pre id="raw"></pre>
+    </section>
+  </main>
+
+  <script>
+    const owner = 'GitHubXinYu';
+    const repo = 'ESP_IR_Remote';
+    const branch = 'main';
+    const commandPath = 'docs/command.json';
+    const statusPath = 'docs/status.json';
+    const tokenInput = document.getElementById('token');
+    const tokenState = document.getElementById('tokenState');
+    const message = document.getElementById('message');
+    const raw = document.getElementById('raw');
+    const storageKey = 'esp-ir-remote-token';
+
+    function apiUrl(path) {
+      return `https://api.github.com/repos/${owner}/${repo}/contents/${path}`;
+    }
+
+    function rawUrl(path) {
+      return `https://raw.githubusercontent.com/${owner}/${repo}/${branch}/${path}?t=${Date.now()}`;
+    }
+
+    function token() {
+      return localStorage.getItem(storageKey) || '';
+    }
+
+    function setBusy(busy) {
+      document.querySelectorAll('button').forEach((button) => {
+        button.disabled = busy;
+      });
+    }
+
+    function headers(json = false) {
+      const value = token();
+      const output = {
+        Accept: 'application/vnd.github+json',
+        'X-GitHub-Api-Version': '2022-11-28'
+      };
+      if (value) output.Authorization = `Bearer ${value}`;
+      if (json) output['Content-Type'] = 'application/json';
+      return output;
+    }
+
+    function encodeBase64(text) {
+      return btoa(unescape(encodeURIComponent(text)));
+    }
+
+    async function getSha(path) {
+      const res = await fetch(`${apiUrl(path)}?ref=${branch}`, { headers: headers() });
+      if (res.status === 404) return '';
+      if (!res.ok) throw new Error(`读取 ${path} 失败: HTTP ${res.status}`);
+      const data = await res.json();
+      return data.sha || '';
+    }
+
+    async function putJson(path, data, commitMessage) {
+      if (!token()) throw new Error('请先保存 GitHub token');
+      const sha = await getSha(path);
+      const body = {
+        message: commitMessage,
+        branch,
+        content: encodeBase64(`${JSON.stringify(data)}\n`)
+      };
+      if (sha) body.sha = sha;
+      const res = await fetch(apiUrl(path), {
+        method: 'PUT',
+        headers: headers(true),
+        body: JSON.stringify(body)
+      });
+      if (!res.ok) {
+        const text = await res.text();
+        throw new Error(`写入 ${path} 失败: HTTP ${res.status} ${text.slice(0, 140)}`);
+      }
+    }
+
+    async function sendCommand(cmd) {
+      setBusy(true);
+      message.textContent = `正在发送 ${cmd}...`;
+      try {
+        await putJson(commandPath, { cmd, ts: Date.now() }, `Send AC ${cmd}`);
+        message.textContent = `${cmd} 命令已写入 GitHub，等待 ESP32 轮询执行`;
+        setTimeout(refreshStatus, 1200);
+      } catch (err) {
+        message.textContent = err.message;
+      } finally {
+        setBusy(false);
+      }
+    }
+
+    function renderStatus(data) {
+      document.getElementById('lastCommand').textContent = data.last_command ?? '-';
+      document.getElementById('lastProcessed').textContent = data.last_processed_ts
+        ? new Date(Number(data.last_processed_ts)).toLocaleString()
+        : '-';
+      document.getElementById('online').textContent = data.online ? 'online' : 'offline';
+      document.getElementById('rssi').textContent = data.wifi_rssi ?? '-';
+      document.getElementById('ip').textContent = data.ip || '-';
+      document.getElementById('lastError').textContent = data.last_error || '-';
+      raw.textContent = JSON.stringify(data, null, 2);
+    }
+
+    async function refreshStatus() {
+      setBusy(true);
+      try {
+        const res = await fetch(rawUrl(statusPath), { cache: 'no-store' });
+        if (!res.ok) throw new Error(`读取状态失败: HTTP ${res.status}`);
+        renderStatus(await res.json());
+        message.textContent = `状态已刷新: ${new Date().toLocaleTimeString()}`;
+      } catch (err) {
+        message.textContent = err.message;
+      } finally {
+        setBusy(false);
+      }
+    }
+
+    document.querySelectorAll('[data-command]').forEach((button) => {
+      button.addEventListener('click', () => sendCommand(button.dataset.command));
+    });
+    document.getElementById('refresh').addEventListener('click', refreshStatus);
+    document.getElementById('saveToken').addEventListener('click', () => {
+      localStorage.setItem(storageKey, tokenInput.value.trim());
+      tokenInput.value = '';
+      tokenState.textContent = token() ? 'Token 已保存在当前浏览器' : 'Token 为空';
+    });
+    document.getElementById('clearToken').addEventListener('click', () => {
+      localStorage.removeItem(storageKey);
+      tokenState.textContent = 'Token 已清除';
+    });
+
+    tokenState.textContent = token() ? 'Token 已保存在当前浏览器' : '尚未保存 Token';
+    refreshStatus();
+    setInterval(refreshStatus, 5000);
+  </script>
+</body>
+</html>
