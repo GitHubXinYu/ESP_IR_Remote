@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>ESP IR Remote</title>
+  <title>AUX AC 云遥控</title>
   <style>
     :root {
       color-scheme: light;
@@ -15,6 +15,7 @@
       --green: #087443;
       --red: #b42318;
       --blue: #175cd3;
+      --amber: #b54708;
     }
     * { box-sizing: border-box; }
     body {
@@ -29,10 +30,14 @@
       padding: 24px 16px 36px;
     }
     h1 {
-      margin: 0 0 16px;
+      margin: 0 0 4px;
       font-size: 25px;
       font-weight: 700;
-      letter-spacing: 0;
+    }
+    .sub {
+      color: var(--muted);
+      font-size: 13px;
+      margin-bottom: 16px;
     }
     section {
       background: var(--panel);
@@ -41,22 +46,6 @@
       padding: 16px;
       margin-bottom: 14px;
     }
-    label {
-      display: block;
-      margin: 0 0 6px;
-      color: var(--muted);
-      font-size: 13px;
-      font-weight: 600;
-    }
-    input {
-      width: 100%;
-      min-height: 42px;
-      border: 1px solid var(--border);
-      border-radius: 6px;
-      padding: 9px 10px;
-      color: var(--text);
-      font: inherit;
-    }
     .row {
       display: flex;
       gap: 10px;
@@ -64,31 +53,37 @@
       align-items: center;
     }
     button {
-      min-height: 44px;
+      min-height: 52px;
       border: 0;
       border-radius: 8px;
-      padding: 0 18px;
+      padding: 0 22px;
       color: white;
       font: inherit;
       font-weight: 700;
+      font-size: 18px;
       cursor: pointer;
+      transition: opacity .15s;
     }
-    button:disabled {
-      cursor: wait;
-      opacity: .65;
-    }
+    button:active { opacity: .7; }
     .on { background: var(--green); }
     .off { background: var(--red); }
-    .secondary { background: var(--blue); }
-    .ghost {
-      background: transparent;
-      color: var(--blue);
-      border: 1px solid var(--border);
+    .conn {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 13px;
+      margin-bottom: 12px;
     }
+    .conn-dot {
+      width: 8px; height: 8px;
+      border-radius: 50%;
+      background: var(--muted);
+    }
+    .conn-dot.online { background: var(--green); }
     .status {
       display: grid;
-      grid-template-columns: 130px 1fr;
-      gap: 8px 12px;
+      grid-template-columns: 120px 1fr;
+      gap: 6px 12px;
       margin-top: 12px;
       font-size: 15px;
     }
@@ -100,13 +95,6 @@
       margin: 0;
       word-break: break-word;
     }
-    .message {
-      min-height: 22px;
-      margin-top: 12px;
-      color: var(--muted);
-      font-size: 14px;
-      word-break: break-word;
-    }
     pre {
       white-space: pre-wrap;
       overflow-wrap: anywhere;
@@ -114,180 +102,102 @@
       border-radius: 6px;
       padding: 12px;
       margin: 12px 0 0;
-      font-size: 13px;
+      font-size: 12px;
     }
   </style>
 </head>
 <body>
   <main>
-    <h1>AUX 空调外网遥控</h1>
-
-    <section>
-      <label for="token">GitHub fine-grained token</label>
-      <input id="token" type="password" autocomplete="off" placeholder="github_pat_...">
-      <div class="row" style="margin-top:10px">
-        <button class="secondary" id="saveToken">保存 Token</button>
-        <button class="ghost" id="clearToken">清除</button>
-      </div>
-      <div class="message" id="tokenState"></div>
-    </section>
+    <h1>AUX 空调云遥控</h1>
+    <div class="sub">MQTT · EMQX 中国节点 · 延迟 &lt;1s</div>
 
     <section>
       <div class="row">
-        <button class="on" data-command="on">开机</button>
-        <button class="off" data-command="off">关机</button>
-        <button class="ghost" id="refresh">刷新状态</button>
+        <button class="on" id="btnOn">开机</button>
+        <button class="off" id="btnOff">关机</button>
+      </div>
+      <div class="conn" id="conn">
+        <span class="conn-dot" id="dot"></span>
+        <span id="connText">连接中…</span>
       </div>
       <dl class="status">
+        <dt>空调状态</dt><dd id="power">---</dd>
         <dt>最后命令</dt><dd id="lastCommand">-</dd>
-        <dt>已处理时间</dt><dd id="lastProcessed">-</dd>
-        <dt>在线状态</dt><dd id="online">-</dd>
+        <dt>在线</dt><dd id="online">-</dd>
         <dt>Wi-Fi RSSI</dt><dd id="rssi">-</dd>
         <dt>IP</dt><dd id="ip">-</dd>
+        <dt>运行时长</dt><dd id="uptime">-</dd>
         <dt>错误</dt><dd id="lastError">-</dd>
       </dl>
-      <div class="message" id="message"></div>
       <pre id="raw"></pre>
     </section>
   </main>
 
+  <script src="https://cdn.jsdelivr.net/npm/mqtt@5/dist/mqtt.min.js"></script>
   <script>
-    const owner = 'GitHubXinYu';
-    const repo = 'ESP_IR_Remote';
-    const branch = 'main';
-    const commandPath = 'docs/command.json';
-    const statusPath = 'docs/status.json';
-    const tokenInput = document.getElementById('token');
-    const tokenState = document.getElementById('tokenState');
-    const message = document.getElementById('message');
-    const raw = document.getElementById('raw');
-    const storageKey = 'esp-ir-remote-token';
+    const BROKER = 'wss://broker-cn.emqx.io:8084/mqtt';
+    const TOPIC_CMD = 'rubia/aux_ac/command';
+    const TOPIC_STAT = 'rubia/aux_ac/status';
 
-    function apiUrl(path) {
-      return `https://api.github.com/repos/${owner}/${repo}/contents/${path}`;
+    const $dot = document.getElementById('dot');
+    const $conn = document.getElementById('connText');
+    const $power = document.getElementById('power');
+    const $raw = document.getElementById('raw');
+
+    function setConn(text, cls) {
+      $conn.textContent = text;
+      $dot.className = 'conn-dot ' + (cls || '');
     }
 
-    function rawUrl(path) {
-      return `https://raw.githubusercontent.com/${owner}/${repo}/${branch}/${path}?t=${Date.now()}`;
+    function uptime(ms) {
+      const s = Math.floor(ms / 1000);
+      const m = Math.floor(s / 60);
+      const h = Math.floor(m / 60);
+      const d = Math.floor(h / 24);
+      if (d) return `${d}d ${h % 24}h`;
+      if (h) return `${h}h ${m % 60}m`;
+      return `${m}m ${s % 60}s`;
     }
 
-    function token() {
-      return localStorage.getItem(storageKey) || '';
-    }
-
-    function setBusy(busy) {
-      document.querySelectorAll('button').forEach((button) => {
-        button.disabled = busy;
-      });
-    }
-
-    function headers(json = false) {
-      const value = token();
-      const output = {
-        Accept: 'application/vnd.github+json',
-        'X-GitHub-Api-Version': '2022-11-28'
-      };
-      if (value) output.Authorization = `Bearer ${value}`;
-      if (json) output['Content-Type'] = 'application/json';
-      return output;
-    }
-
-    function encodeBase64(text) {
-      return btoa(unescape(encodeURIComponent(text)));
-    }
-
-    async function getSha(path) {
-      const res = await fetch(`${apiUrl(path)}?ref=${branch}&t=${Date.now()}`, {
-        cache: 'no-store',
-        headers: headers()
-      });
-      if (res.status === 404) return '';
-      if (!res.ok) throw new Error(`读取 ${path} 失败: HTTP ${res.status}`);
-      const data = await res.json();
-      return data.sha || '';
-    }
-
-    async function putJson(path, data, commitMessage, attempt = 1) {
-      if (!token()) throw new Error('请先保存 GitHub token');
-      const sha = await getSha(path);
-      const body = {
-        message: commitMessage,
-        branch,
-        content: encodeBase64(`${JSON.stringify(data)}\n`)
-      };
-      if (sha) body.sha = sha;
-      const res = await fetch(apiUrl(path), {
-        method: 'PUT',
-        cache: 'no-store',
-        headers: headers(true),
-        body: JSON.stringify(body)
-      });
-      if (res.status === 409 && attempt < 2) {
-        return putJson(path, data, commitMessage, attempt + 1);
-      }
-      if (!res.ok) {
-        const text = await res.text();
-        throw new Error(`写入 ${path} 失败: HTTP ${res.status} ${text.slice(0, 140)}`);
-      }
-    }
-
-    async function sendCommand(cmd) {
-      setBusy(true);
-      message.textContent = `正在发送 ${cmd}...`;
-      try {
-        await putJson(commandPath, { cmd, ts: Date.now() }, `Send AC ${cmd}`);
-        message.textContent = `${cmd} 命令已写入 GitHub，等待 ESP32 轮询执行`;
-        setTimeout(refreshStatus, 1200);
-      } catch (err) {
-        message.textContent = err.message;
-      } finally {
-        setBusy(false);
-      }
-    }
-
-    function renderStatus(data) {
-      document.getElementById('lastCommand').textContent = data.last_command ?? '-';
-      document.getElementById('lastProcessed').textContent = data.last_processed_ts
-        ? new Date(Number(data.last_processed_ts)).toLocaleString()
-        : '-';
-      document.getElementById('online').textContent = data.online ? 'online' : 'offline';
-      document.getElementById('rssi').textContent = data.wifi_rssi ?? '-';
+    function render(data) {
+      $power.textContent = (data.power === 'on') ? '🟢 开机' : (data.power === 'off') ? '🔴 关机' : data.power || '---';
+      document.getElementById('lastCommand').textContent = data.last_command || '-';
+      document.getElementById('online').textContent = data.online ? '✅ 在线' : '❌ 离线';
+      document.getElementById('rssi').textContent = data.wifi_rssi != null ? data.wifi_rssi + ' dBm' : '-';
       document.getElementById('ip').textContent = data.ip || '-';
+      document.getElementById('uptime').textContent = data.uptime_ms ? uptime(data.uptime_ms) : '-';
       document.getElementById('lastError').textContent = data.last_error || '-';
-      raw.textContent = JSON.stringify(data, null, 2);
+      $raw.textContent = JSON.stringify(data, null, 2);
     }
 
-    async function refreshStatus() {
-      setBusy(true);
-      try {
-        const res = await fetch(rawUrl(statusPath), { cache: 'no-store' });
-        if (!res.ok) throw new Error(`读取状态失败: HTTP ${res.status}`);
-        renderStatus(await res.json());
-        message.textContent = `状态已刷新: ${new Date().toLocaleTimeString()}`;
-      } catch (err) {
-        message.textContent = err.message;
-      } finally {
-        setBusy(false);
-      }
+    const client = mqtt.connect(BROKER, {
+      clientId: 'rubia_web_' + Math.random().toString(16).slice(2, 8),
+      clean: true,
+      reconnectPeriod: 3000,
+      connectTimeout: 8000
+    });
+
+    client.on('connect', () => {
+      setConn('已连接 EMQX', 'online');
+      client.subscribe(TOPIC_STAT, (err) => {
+        if (!err) setConn('已连接 · 监听中', 'online');
+      });
+    });
+
+    client.on('message', (topic, msg) => {
+      try { render(JSON.parse(msg.toString())); } catch (e) {}
+    });
+
+    client.on('error', () => setConn('连接失败，重试中…', ''));
+    client.on('close', () => setConn('断开，重连中…', ''));
+    client.on('reconnect', () => setConn('重连中…', ''));
+
+    function sendCmd(cmd) {
+      client.publish(TOPIC_CMD, cmd, { qos: 1 });
     }
 
-    document.querySelectorAll('[data-command]').forEach((button) => {
-      button.addEventListener('click', () => sendCommand(button.dataset.command));
-    });
-    document.getElementById('refresh').addEventListener('click', refreshStatus);
-    document.getElementById('saveToken').addEventListener('click', () => {
-      localStorage.setItem(storageKey, tokenInput.value.trim());
-      tokenInput.value = '';
-      tokenState.textContent = token() ? 'Token 已保存在当前浏览器' : 'Token 为空';
-    });
-    document.getElementById('clearToken').addEventListener('click', () => {
-      localStorage.removeItem(storageKey);
-      tokenState.textContent = 'Token 已清除';
-    });
-
-    tokenState.textContent = token() ? 'Token 已保存在当前浏览器' : '尚未保存 Token';
-    refreshStatus();
-    setInterval(refreshStatus, 5000);
+    document.getElementById('btnOn').addEventListener('click', () => sendCmd('on'));
+    document.getElementById('btnOff').addEventListener('click', () => sendCmd('off'));
   </script>
 </body>
 </html>
